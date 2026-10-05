@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>YouTube Tutorial → PDF</title>
+<style>
+ body{font-family:system-ui,sans-serif;max-width:960px;margin:24px auto;padding:0 16px;color:#1f2937}
+ h1{font-size:1.4rem} .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:12px 0}
+ input[type=text]{flex:1;min-width:260px;padding:8px} button{padding:8px 14px;cursor:pointer}
+ #stage{position:relative;display:inline-block;line-height:0;user-select:none;max-width:100%}
+ #stage img{max-width:100%;display:block;cursor:crosshair}
+ #sel{position:absolute;border:2px solid #e11d48;background:rgba(225,29,72,.15);pointer-events:none;display:none}
+ .muted{color:#6b7280;font-size:.9rem} #msg{margin:8px 0;font-weight:500}
+ section{display:none}
+</style></head><body>
+<h1>YouTube Tutorial → PDF</h1>
+<div class="row"><input id="url" type="text" placeholder="Paste YouTube tutorial link…">
+ <input id="lang" type="text" value="en" size="3" title="Transcript language code"><button id="go">Load video</button></div>
+<div id="msg" class="muted"></div>
+<section id="editor">
+ <p class="muted">1. Scrub to a frame that shows the area you want. 2. Drag on the image to select the screenshot region (no selection = full frame).</p>
+ <div class="row"><input id="t" type="range" min="0" value="0" step="1" style="flex:1"><span id="tl"></span></div>
+ <div id="stage"><img id="frame" draggable="false"><div id="sel"></div></div>
+ <div class="row">
+  <label>New step every <input id="interval" type="number" value="30" min="5" style="width:60px"> seconds</label>
+  <label><input id="dedupe" type="checkbox" checked> skip repeated screenshots</label>
+  <button id="clear">Clear selection</button>
+  <button id="gen"><b>Generate PDF</b></button>
+ </div>
+</section>
+<script>
+const $=id=>document.getElementById(id);let job=null,region=null,dur=0,timer;
+const fmt=s=>Math.floor(s/60)+":"+String(Math.floor(s%60)).padStart(2,"0");
+$("go").onclick=async()=>{
+ $("msg").textContent="Starting…";$("editor").style.display="none";
+ const r=await fetch("/api/prepare",{method:"POST",body:JSON.stringify({url:$("url").value,lang:$("lang").value})});
+ const d=await r.json();if(d.error){$("msg").textContent=d.error;return}
+ job=d.job;clearInterval(timer);timer=setInterval(poll,1500);poll()};
+async function poll(){
+ const s=await (await fetch("/api/job/"+job)).json();$("msg").textContent=s.message+(s.title?" — "+s.title:"");
+ if(s.state=="ready"){clearInterval(timer);dur=s.duration;$("t").max=Math.floor(dur);
+  $("t").value=Math.min(10,dur/2);$("editor").style.display="block";load();
+  $("msg").textContent=`${s.title} · ${fmt(dur)} · ${s.segments} transcript lines`+(s.segments?"":" (no transcript found — screenshots only)")}
+ if(s.state=="error")clearInterval(timer)}
+function load(){$("tl").textContent=fmt($("t").value);$("frame").src=`/api/frame/${job}?t=${$("t").value}&_=${Date.now()}`}
+let dt;$("t").oninput=()=>{$("tl").textContent=fmt($("t").value);clearTimeout(dt);dt=setTimeout(load,250)};
+const img=$("frame"),sel=$("sel");let start=null;
+function pos(e){const b=img.getBoundingClientRect();return[Math.min(Math.max((e.clientX-b.left)/b.width,0),1),Math.min(Math.max((e.clientY-b.top)/b.height,0),1)]}
+function draw(){if(!region){sel.style.display="none";return}
+ const b=img.getBoundingClientRect();Object.assign(sel.style,{display:"block",left:region.x*b.width+"px",top:region.y*b.height+"px",width:region.w*b.width+"px",height:region.h*b.height+"px"})}
+img.onmousedown=e=>{start=pos(e);region=null;e.preventDefault()};
+window.onmousemove=e=>{if(!start)return;const[x,y]=pos(e);region={x:Math.min(x,start[0]),y:Math.min(y,start[1]),w:Math.abs(x-start[0]),h:Math.abs(y-start[1])};draw()};
+window.onmouseup=()=>{start=null;if(region&&(region.w<.01||region.h<.01)){region=null;draw()}};
+$("clear").onclick=()=>{region=null;draw()};
+$("gen").onclick=async()=>{
+ $("msg").textContent="Building PDF… (extracting frames)";$("gen").disabled=true;
+ const r=await fetch("/api/generate/"+job,{method:"POST",body:JSON.stringify({region,interval:+$("interval").value,skip_duplicates:$("dedupe").checked})});
+ $("gen").disabled=false;
+ if(!r.ok){$("msg").textContent="Error: "+((await r.json()).error||r.status);return}
+ const a=document.createElement("a");a.href=URL.createObjectURL(await r.blob());
+ a.download=(r.headers.get("content-disposition")||"").match(/filename\*?=(?:UTF-8'')?"?([^";]+)/)?.[1]||"tutorial.pdf";a.click();$("msg").textContent="Done — PDF downloaded."};
+</script></body></html>
